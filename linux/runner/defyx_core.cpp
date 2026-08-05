@@ -6,6 +6,7 @@
 #include <string>
 #include <filesystem>
 #include <vector>
+#include <type_traits>
 #include <dlfcn.h>
 #include <unistd.h>
 #include <limits.h>
@@ -35,6 +36,7 @@ typedef int (*dx_is_tunnel_running_fn)();
 static void* g_dx_dll = nullptr;
 static std::mutex g_dx_mutex;
 static std::mutex g_log_mutex;
+static std::string g_dx_load_error;
 static dx_start_vpn_fn g_start_vpn = nullptr;
 static dx_stop_vpn_fn g_stop_vpn = nullptr;
 static dx_start_t2s_fn g_start_t2s = nullptr;
@@ -54,6 +56,28 @@ static dx_free_string_fn g_free_string = nullptr;
 static dx_set_connection_method_fn g_set_connection_method = nullptr;
 static dx_set_cache_dir_fn g_set_cache_dir = nullptr;
 static dx_is_tunnel_running_fn g_is_tunnel_running = nullptr;
+
+static void ResetCoreSymbols() {
+  g_start_vpn = nullptr;
+  g_stop_vpn = nullptr;
+  g_start_t2s = nullptr;
+  g_stop_t2s = nullptr;
+  g_stop_all = nullptr;
+  g_measure_ping = nullptr;
+  g_get_flag = nullptr;
+  g_set_asn_name = nullptr;
+  g_set_timezone = nullptr;
+  g_get_flowline = nullptr;
+  g_get_cached_flowline = nullptr;
+  g_decode_verify_flowline = nullptr;
+  g_get_vpn_status = nullptr;
+  g_set_progress_cb = nullptr;
+  g_set_verbose = nullptr;
+  g_free_string = nullptr;
+  g_set_connection_method = nullptr;
+  g_set_cache_dir = nullptr;
+  g_is_tunnel_running = nullptr;
+}
 
 // Helper: get directory of current executable
 static std::string GetExeDir() {
@@ -98,6 +122,8 @@ bool LoadCoreDll(const std::string& dllPath) {
   std::lock_guard<std::mutex> lock(g_dx_mutex);
   if (g_dx_dll) return true;
 
+  g_dx_load_error.clear();
+
   std::string path = dllPath;
   void* dll = nullptr;
 
@@ -105,7 +131,7 @@ bool LoadCoreDll(const std::string& dllPath) {
   std::string exeDir = GetExeDir();
   if (!exeDir.empty()) {
     std::string full = exeDir + "libDXcore.so";
-    dll = dlopen(full.c_str(), RTLD_LAZY);
+    dll = dlopen(full.c_str(), RTLD_NOW);
     if (!dll) {
       defyx_core::LogMessage("dlopen failed for exe-dir path '" + full + "' err=" + std::string(dlerror()));
     } else {
@@ -116,7 +142,7 @@ bool LoadCoreDll(const std::string& dllPath) {
   // 1b) If not in exe dir root, look in lib/ next to the executable (Flutter bundle layout)
   if (!dll && !exeDir.empty()) {
     std::string nested = exeDir + "lib/libDXcore.so";
-    dll = dlopen(nested.c_str(), RTLD_LAZY);
+    dll = dlopen(nested.c_str(), RTLD_NOW);
     if (!dll) {
       defyx_core::LogMessage("dlopen failed for lib-dir path '" + nested + "' err=" + std::string(dlerror()));
     } else {
@@ -126,7 +152,7 @@ bool LoadCoreDll(const std::string& dllPath) {
 
   // 2) If caller provided a non-empty path and we didn't load yet, try it explicitly
   if (!dll && !path.empty()) {
-    dll = dlopen(path.c_str(), RTLD_LAZY);
+    dll = dlopen(path.c_str(), RTLD_NOW);
     if (!dll) {
       defyx_core::LogMessage("dlopen failed for provided path '" + path + "' err=" + std::string(dlerror()));
     } else {
@@ -136,9 +162,10 @@ bool LoadCoreDll(const std::string& dllPath) {
 
   // 3) As a last resort, attempt to load libDXcore.so using the default search path
   if (!dll) {
-    dll = dlopen("libDXcore.so", RTLD_LAZY);
+    dll = dlopen("libDXcore.so", RTLD_NOW);
     if (!dll) {
-      defyx_core::LogMessage("Final dlopen('libDXcore.so') failed err=" + std::string(dlerror()));
+      g_dx_load_error = std::string("dlopen('libDXcore.so') failed: ") + dlerror();
+      defyx_core::LogMessage(g_dx_load_error);
       return false;
     } else {
       defyx_core::LogMessage("Loaded libDXcore.so from default search path");
@@ -146,51 +173,45 @@ bool LoadCoreDll(const std::string& dllPath) {
   }
 
   g_dx_dll = dll;
+  ResetCoreSymbols();
 
-  g_start_vpn = (dx_start_vpn_fn)dlsym(g_dx_dll, "StartVPN");
-  g_stop_vpn = (dx_stop_vpn_fn)dlsym(g_dx_dll, "StopVPN");
-  g_start_t2s = (dx_start_t2s_fn)dlsym(g_dx_dll, "StartTun2Socks");
-  g_stop_t2s = (dx_stop_t2s_fn)dlsym(g_dx_dll, "StopTun2Socks");
-  g_stop_all = (dx_stop_fn)dlsym(g_dx_dll, "Stop");
-  g_measure_ping = (dx_measure_ping_fn)dlsym(g_dx_dll, "MeasurePing");
-  g_get_flag = (dx_get_flag_fn)dlsym(g_dx_dll, "GetFlag");
-  g_set_asn_name = (dx_set_asn_name_fn)dlsym(g_dx_dll, "SetAsnName");
-  g_set_timezone = (dx_set_timezone_fn)dlsym(g_dx_dll, "SetTimeZone");
-  g_get_flowline = (dx_get_flowline_fn)dlsym(g_dx_dll, "GetFlowLine");
-  g_get_cached_flowline = (dx_get_cached_flowline_fn)dlsym(g_dx_dll, "GetCachedFlowLine");
-  g_decode_verify_flowline = (dx_decode_verify_flowline_fn)dlsym(g_dx_dll, "DecodeAndVerifyFlowline");
-  g_get_vpn_status = (dx_get_vpn_status_fn)dlsym(g_dx_dll, "GetVpnStatus");
-  g_set_progress_cb = (dx_set_progress_callback_fn)dlsym(g_dx_dll, "SetProgressCallback");
-  g_set_verbose = (dx_set_verbose_logging_fn)dlsym(g_dx_dll, "SetVerboseLogging");
-  g_free_string = (dx_free_string_fn)dlsym(g_dx_dll, "FreeString");
-  g_set_connection_method = (dx_set_connection_method_fn)dlsym(g_dx_dll, "SetConnectionMethod");
-  g_set_cache_dir = (dx_set_cache_dir_fn)dlsym(g_dx_dll, "SetCacheDir");
-  g_is_tunnel_running = (dx_is_tunnel_running_fn)dlsym(g_dx_dll, "IsTunnelRunning");
-
-  auto check = [](const char* name, auto fn) {
-    if (!fn) {
-      defyx_core::LogMessage(std::string("Missing export: ") + name + " (dlerror=" + std::string(dlerror()) + ")");
+  auto resolve = [&](const char* name, auto& out) -> bool {
+    dlerror();
+    void* symbol = dlsym(g_dx_dll, name);
+    const char* error = dlerror();
+    if (error != nullptr || symbol == nullptr) {
+      g_dx_load_error = std::string("Missing required DXcore export '") + name + "': " + (error ? error : "symbol not found");
+      defyx_core::LogMessage(g_dx_load_error);
+      return false;
     }
+    out = reinterpret_cast<std::decay_t<decltype(out)>>(symbol);
+    return true;
   };
-  check("SetProgressCallback", g_set_progress_cb);
-  check("SetVerboseLogging", g_set_verbose);
-  check("FreeString", g_free_string);
-  check("StartVPN", g_start_vpn);
-  check("StopVPN", g_stop_vpn);
-  check("StartTun2Socks", g_start_t2s);
-  check("StopTun2Socks", g_stop_t2s);
-  check("Stop", g_stop_all);
-  check("MeasurePing", g_measure_ping);
-  check("GetFlag", g_get_flag);
-  check("SetAsnName", g_set_asn_name);
-  check("SetTimeZone", g_set_timezone);
-  check("GetFlowLine", g_get_flowline);
-  check("GetCachedFlowLine", g_get_cached_flowline);
-  check("DecodeAndVerifyFlowline", g_decode_verify_flowline);
-  check("GetVpnStatus", g_get_vpn_status);
-  check("SetConnectionMethod", g_set_connection_method);
-  check("SetCacheDir", g_set_cache_dir);
-  check("IsTunnelRunning", g_is_tunnel_running);
+
+  if (!resolve("StartVPN", g_start_vpn) ||
+      !resolve("StopVPN", g_stop_vpn) ||
+      !resolve("StartTun2Socks", g_start_t2s) ||
+      !resolve("StopTun2Socks", g_stop_t2s) ||
+      !resolve("Stop", g_stop_all) ||
+      !resolve("MeasurePing", g_measure_ping) ||
+      !resolve("GetFlag", g_get_flag) ||
+      !resolve("SetAsnName", g_set_asn_name) ||
+      !resolve("SetTimeZone", g_set_timezone) ||
+      !resolve("GetFlowLine", g_get_flowline) ||
+      !resolve("GetCachedFlowLine", g_get_cached_flowline) ||
+      !resolve("DecodeAndVerifyFlowline", g_decode_verify_flowline) ||
+      !resolve("GetVpnStatus", g_get_vpn_status) ||
+      !resolve("SetProgressCallback", g_set_progress_cb) ||
+      !resolve("SetVerboseLogging", g_set_verbose) ||
+      !resolve("FreeString", g_free_string) ||
+      !resolve("SetConnectionMethod", g_set_connection_method) ||
+      !resolve("SetCacheDir", g_set_cache_dir) ||
+      !resolve("IsTunnelRunning", g_is_tunnel_running)) {
+    ResetCoreSymbols();
+    dlclose(g_dx_dll);
+    g_dx_dll = nullptr;
+    return false;
+  }
   defyx_core::LogMessage("libDXcore.so loaded and symbol lookup completed");
 
   return true;
@@ -200,23 +221,7 @@ void UnloadCoreDll() {
   std::lock_guard<std::mutex> lock(g_dx_mutex);
   if (g_dx_dll) {
     defyx_core::LogMessage("Unloading libDXcore.so");
-    g_start_vpn = nullptr;
-    g_stop_vpn = nullptr;
-    g_start_t2s = nullptr;
-    g_stop_t2s = nullptr;
-    g_stop_all = nullptr;
-    g_measure_ping = nullptr;
-    g_get_flag = nullptr;
-    g_set_asn_name = nullptr;
-    g_set_timezone = nullptr;
-    g_get_flowline = nullptr;
-    g_get_cached_flowline = nullptr;
-    g_get_vpn_status = nullptr;
-    g_set_progress_cb = nullptr;
-    g_set_verbose = nullptr;
-    g_free_string = nullptr;
-  g_set_connection_method = nullptr;
-  g_is_tunnel_running = nullptr;
+    ResetCoreSymbols();
 
     // Clear progress handler
     g_progress_handler = nullptr;
@@ -233,6 +238,16 @@ bool LoadCoreDll(const std::string& dllPath) {
 
 void UnloadCoreDll() {
   ::UnloadCoreDll();
+}
+
+bool IsCoreLoaded() {
+  std::lock_guard<std::mutex> lock(g_dx_mutex);
+  return g_dx_dll != nullptr;
+}
+
+std::string GetLastLoadError() {
+  std::lock_guard<std::mutex> lock(g_dx_mutex);
+  return g_dx_load_error;
 }
 
 void EnableVerboseLogs(bool enable) {
@@ -254,7 +269,7 @@ namespace defyx_core {
 bool StartVPN(const std::string& cacheDir, const std::string& flowLine, const std::string& pattern) {
   try {
     defyx_core::LogMessage("StartVPN called cacheDir='" + cacheDir + "' flowLine='" + flowLine + "' pattern='" + pattern + "'");
-    if (!g_dx_dll) LoadCoreDll("");
+    if (!g_dx_dll && !LoadCoreDll("")) return false;
     if (g_start_vpn) {
       int r = g_start_vpn(cacheDir.c_str(), flowLine.c_str(), pattern.c_str());
       defyx_core::LogMessage(std::string("StartVPN returned ") + (r != 0 ? "true" : "false"));
@@ -262,13 +277,13 @@ bool StartVPN(const std::string& cacheDir, const std::string& flowLine, const st
     }
   } catch (...) {}
   (void)cacheDir; (void)flowLine; (void)pattern;
-  return true;
+  return false;
 }
 
 void StartTun2Socks(long long fd, const std::string& addr) {
   try {
     defyx_core::LogMessage("StartTun2Socks called fd=" + std::to_string(fd) + " addr='" + addr + "'");
-    if (!g_dx_dll) LoadCoreDll("");
+    if (!g_dx_dll && !LoadCoreDll("")) return;
     if (g_start_t2s) {
       g_start_t2s(fd, addr.c_str());
       return;
@@ -280,35 +295,33 @@ void StartTun2Socks(long long fd, const std::string& addr) {
 long long MeasurePing() {
   try {
     defyx_core::LogMessage("MeasurePing called");
-    if (!g_dx_dll) LoadCoreDll("");
+    if (!g_dx_dll && !LoadCoreDll("")) return -1;
     if (g_measure_ping) {
       auto v = g_measure_ping();
       defyx_core::LogMessage("MeasurePing returned " + std::to_string(v));
       return v;
     }
   } catch (...) {}
-  // fallback fake ping
-  using namespace std::chrono;
-  return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count() % 200;
+  return -1;
 }
 
 bool StopVPN() {
   try {
     defyx_core::LogMessage("StopVPN called");
-    if (!g_dx_dll) LoadCoreDll("");
+    if (!g_dx_dll && !LoadCoreDll("")) return false;
     if (g_stop_vpn) {
       auto r = g_stop_vpn() != 0;
       defyx_core::LogMessage(std::string("StopVPN returned ") + (r ? "true" : "false"));
       return r;
     }
   } catch (...) {}
-  return true;
+  return false;
 }
 
 void StopTun2Socks() {
   try {
     defyx_core::LogMessage("StopTun2Socks called");
-    if (!g_dx_dll) LoadCoreDll("");
+    if (!g_dx_dll && !LoadCoreDll("")) return;
     if (g_stop_t2s) { g_stop_t2s(); return; }
   } catch (...) {}
 }
@@ -316,7 +329,7 @@ void StopTun2Socks() {
 void Stop() {
   try {
     defyx_core::LogMessage("Stop called");
-    if (!g_dx_dll) LoadCoreDll("");
+    if (!g_dx_dll && !LoadCoreDll("")) return;
     if (g_stop_all) { g_stop_all(); return; }
   } catch (...) {}
 }
@@ -324,7 +337,7 @@ void Stop() {
 std::string GetFlag() {
   try {
     defyx_core::LogMessage("GetFlag called");
-    if (!g_dx_dll) LoadCoreDll("");
+    if (!g_dx_dll && !LoadCoreDll("")) return "";
     if (g_get_flag) {
       char* flag = g_get_flag();
       std::string result = flag ? std::string(flag) : std::string();
@@ -332,13 +345,13 @@ std::string GetFlag() {
       return result;
     }
   } catch (...) {}
-  return "xx";
+  return "";
 }
 
 void SetAsnName() {
   try {
     defyx_core::LogMessage("SetAsnName called");
-    if (!g_dx_dll) LoadCoreDll("");
+    if (!g_dx_dll && !LoadCoreDll("")) return;
     if (g_set_asn_name) { g_set_asn_name(); return; }
   } catch (...) {}
 }
@@ -346,7 +359,7 @@ void SetAsnName() {
 void SetTimeZone(float tz) {
   try {
     defyx_core::LogMessage("SetTimeZone called tz=" + std::to_string(tz));
-    if (!g_dx_dll) LoadCoreDll("");
+    if (!g_dx_dll && !LoadCoreDll("")) return;
     if (g_set_timezone) { g_set_timezone(tz); return; }
   } catch (...) {}
   (void)tz;
@@ -355,7 +368,7 @@ void SetTimeZone(float tz) {
 std::string GetFlowLine(bool isTest) {
   try {
     defyx_core::LogMessage("GetFlowLine called isTest=" + std::to_string(isTest));
-    if (!g_dx_dll) LoadCoreDll("");
+    if (!g_dx_dll && !LoadCoreDll("")) return "";
     if (g_get_flowline) {
       char* line = g_get_flowline(isTest ? 1 : 0);
       std::string result = line ? std::string(line) : std::string();
@@ -363,13 +376,13 @@ std::string GetFlowLine(bool isTest) {
       return result;
     }
   } catch (...) {}
-  return "default";
+  return "";
 }
 
 std::string GetCachedFlowLine() {
   try {
     defyx_core::LogMessage("GetCachedFlowLine called");
-    if (!g_dx_dll) LoadCoreDll("");
+    if (!g_dx_dll && !LoadCoreDll("")) return "";
     if (g_get_cached_flowline) {
       char* line = g_get_cached_flowline();
       std::string result = line ? std::string(line) : std::string();
@@ -383,7 +396,7 @@ std::string GetCachedFlowLine() {
 std::string DecodeAndVerifyFlowline(const std::string& flowLine) {
   try {
     defyx_core::LogMessage("DecodeAndVerifyFlowline called");
-    if (!g_dx_dll) LoadCoreDll("");
+    if (!g_dx_dll && !LoadCoreDll("")) return "";
     if (g_decode_verify_flowline) {
       char* decoded = g_decode_verify_flowline(flowLine.c_str());
       std::string result = decoded ? std::string(decoded) : std::string();
@@ -397,7 +410,7 @@ std::string DecodeAndVerifyFlowline(const std::string& flowLine) {
 std::string GetVpnStatus() {
   try {
     defyx_core::LogMessage("GetVpnStatus called");
-    if (!g_dx_dll) LoadCoreDll("");
+    if (!g_dx_dll && !LoadCoreDll("")) return "unavailable";
     if (g_get_vpn_status) {
       char* status = g_get_vpn_status();
       std::string result = status ? std::string(status) : std::string();
@@ -405,13 +418,13 @@ std::string GetVpnStatus() {
       return result;
     }
   } catch (...) {}
-  return "disconnected";
+  return "unavailable";
 }
 
 void SetConnectionMethod(const std::string& method) {
   try {
     defyx_core::LogMessage("SetConnectionMethod called method=" + method);
-    if (!g_dx_dll) LoadCoreDll("");
+    if (!g_dx_dll && !LoadCoreDll("")) return;
     if (g_set_connection_method) {
       g_set_connection_method(method.c_str());
     }
@@ -431,7 +444,7 @@ void SetCacheDir(const std::string& cacheDir) {
       defyx_core::LogMessage("Created cache directory");
     }
     
-    if (!g_dx_dll) LoadCoreDll("");
+    if (!g_dx_dll && !LoadCoreDll("")) return;
     if (g_set_cache_dir) {
       g_set_cache_dir(cacheDir.c_str());
     }
@@ -441,7 +454,7 @@ void SetCacheDir(const std::string& cacheDir) {
 bool IsTunnelRunning() {
   try {
     defyx_core::LogMessage("IsTunnelRunning called");
-    if (!g_dx_dll) LoadCoreDll("");
+    if (!g_dx_dll && !LoadCoreDll("")) return false;
     if (g_is_tunnel_running) {
       bool running = g_is_tunnel_running() != 0;
       defyx_core::LogMessage(std::string("IsTunnelRunning returned ") + (running ? "true" : "false"));

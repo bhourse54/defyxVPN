@@ -35,6 +35,10 @@ key.keystore
 *build
 .env
 lib/shared/global_vars.dart
+**/libDXcore.so
+DXcore*.zip
+test/fixtures/dxcore-*
+test/fixtures/*.so
 
 # Symbolication related
 app.*.symbols

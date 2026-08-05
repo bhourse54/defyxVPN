@@ -12,7 +12,7 @@ import 'package:version/version.dart';
 final pingLoadingProvider = StateProvider<bool>((ref) => false);
 final flagLoadingProvider = StateProvider<bool>((ref) => false);
 
-final pingProvider = StateProvider<String>((ref) => '0');
+final pingProvider = StateProvider<String>((ref) => 'unavailable');
 
 final flagProvider = FutureProvider<String>((ref) async {
   final isLoading = ref.watch(flagLoadingProvider);

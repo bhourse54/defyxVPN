@@ -15,7 +15,6 @@ namespace
 
     constexpr int PING_TIMEOUT_MS = 5000;
     constexpr int FLAG_TIMEOUT_MS = 3000;
-    constexpr const char *DEFAULT_FLAG = "xx";
     constexpr int DEFAULT_PING = 999;
 
     std::string LookupString(FlValue *map, const char *key)
@@ -108,6 +107,14 @@ namespace
         }
     };
 
+    struct AsyncPingResult
+    {
+        AsyncPingTask *task;
+        bool success;
+        int ping_result;
+        std::string error_message;
+    };
+
     struct AsyncFlagTask
     {
         FlMethodCall *method_call;
@@ -126,13 +133,27 @@ namespace
         }
     };
 
+    struct AsyncFlagResult
+    {
+        AsyncFlagTask *task;
+        bool success;
+        std::string flag_result;
+        std::string error_message;
+    };
+
     gboolean DeliverPingResult(gpointer user_data)
     {
-        auto *data = static_cast<std::pair<AsyncPingTask *, int> *>(user_data);
-        auto *task = data->first;
-        int ping_result = data->second;
+        auto *data = static_cast<AsyncPingResult *>(user_data);
+        auto *task = data->task;
 
-        FinishWithInt(task->method_call, static_cast<int64_t>(ping_result));
+        if (data->success)
+        {
+            FinishWithInt(task->method_call, static_cast<int64_t>(data->ping_result));
+        }
+        else
+        {
+            FinishWithError(task->method_call, "DXCORE_UNAVAILABLE", data->error_message.c_str());
+        }
 
         delete task;
         delete data;
@@ -141,11 +162,17 @@ namespace
 
     gboolean DeliverFlagResult(gpointer user_data)
     {
-        auto *data = static_cast<std::pair<AsyncFlagTask *, std::string> *>(user_data);
-        auto *task = data->first;
-        std::string flag_result = data->second;
+        auto *data = static_cast<AsyncFlagResult *>(user_data);
+        auto *task = data->task;
 
-        FinishWithString(task->method_call, flag_result);
+        if (data->success)
+        {
+            FinishWithString(task->method_call, data->flag_result);
+        }
+        else
+        {
+            FinishWithError(task->method_call, "DXCORE_UNAVAILABLE", data->error_message.c_str());
+        }
 
         delete task;
         delete data;
@@ -154,7 +181,9 @@ namespace
 
     void ExecutePingInBackground(AsyncPingTask *task)
     {
+        bool success = false;
         int ping_result = DEFAULT_PING;
+        std::string error_message = "DXcore ping is unavailable";
 
         try
         {
@@ -165,33 +194,37 @@ namespace
 
             if (duration.count() > PING_TIMEOUT_MS)
             {
-                ping_result = DEFAULT_PING;
+                error_message = "DXcore ping request timed out";
             }
             else if (core_ping <= 0)
             {
-                ping_result = DEFAULT_PING;
+                error_message = "DXcore did not return a valid ping";
             }
             else if (core_ping > 9999)
             {
                 ping_result = 9999;
+                success = true;
             }
             else
             {
                 ping_result = static_cast<int>(core_ping);
+                success = true;
             }
         }
         catch (...)
         {
-            ping_result = DEFAULT_PING;
+            error_message = "DXcore ping request failed";
         }
 
-        auto *result_data = new std::pair<AsyncPingTask *, int>(task, ping_result);
+        auto *result_data = new AsyncPingResult{task, success, ping_result, error_message};
         g_idle_add(DeliverPingResult, result_data);
     }
 
     void ExecuteFlagInBackground(AsyncFlagTask *task)
     {
-        std::string flag_result = DEFAULT_FLAG;
+        bool success = false;
+        std::string flag_result;
+        std::string error_message = "DXcore flag is unavailable";
 
         try
         {
@@ -202,23 +235,24 @@ namespace
 
             if (duration.count() > FLAG_TIMEOUT_MS)
             {
-                flag_result = DEFAULT_FLAG;
+                error_message = "DXcore flag request timed out";
             }
             else if (core_flag.empty() || core_flag.length() > 10)
             {
-                flag_result = DEFAULT_FLAG;
+                error_message = "DXcore did not return a valid flag";
             }
             else
             {
                 flag_result = core_flag;
+                success = true;
             }
         }
         catch (...)
         {
-            flag_result = DEFAULT_FLAG;
+            error_message = "DXcore flag request failed";
         }
 
-        auto *result_data = new std::pair<AsyncFlagTask *, std::string>(task, flag_result);
+        auto *result_data = new AsyncFlagResult{task, success, flag_result, error_message};
         g_idle_add(DeliverFlagResult, result_data);
     }
 
@@ -477,12 +511,16 @@ void VPNChannelHandler::HandleMethodCall(FlMethodChannel *channel,
     {
         if (strcmp(method, "connect") == 0)
         {
-            self->SetVPNStatus("connected");
-            self->SendStatus("connected");
-            FinishWithBool(method_call, true);
+            FinishWithError(method_call, "UNSUPPORTED", "Linux connect() is not implemented in the native runner");
         }
         else if (strcmp(method, "disconnect") == 0)
         {
+            if (!defyx_core::LoadCoreDll(""))
+            {
+                FinishWithError(method_call, "DXCORE_UNAVAILABLE", "DXcore library is unavailable or invalid");
+                return;
+            }
+
             {
                 std::lock_guard<std::mutex> lock(self->status_mutex_);
                 self->vpn_status_ = "disconnecting";
@@ -534,6 +572,12 @@ void VPNChannelHandler::HandleMethodCall(FlMethodChannel *channel,
         }
         else if (strcmp(method, "getVpnStatus") == 0)
         {
+            if (!defyx_core::LoadCoreDll(""))
+            {
+                FinishWithError(method_call, "DXCORE_UNAVAILABLE", "DXcore library is unavailable or invalid");
+                return;
+            }
+
             std::string status;
             {
                 std::lock_guard<std::mutex> lock(self->status_mutex_);
@@ -543,20 +587,31 @@ void VPNChannelHandler::HandleMethodCall(FlMethodChannel *channel,
         }
         else if (strcmp(method, "isTunnelRunning") == 0)
         {
-            std::string status;
+            if (!defyx_core::LoadCoreDll(""))
             {
-                std::lock_guard<std::mutex> lock(self->status_mutex_);
-                status = self->vpn_status_;
+                FinishWithError(method_call, "DXCORE_UNAVAILABLE", "DXcore library is unavailable or invalid");
+                return;
             }
-            FinishWithBool(method_call, status == "connected");
+
+            FinishWithBool(method_call, defyx_core::IsTunnelRunning());
         }
         else if (strcmp(method, "calculatePing") == 0)
         {
+            if (!defyx_core::LoadCoreDll(""))
+            {
+                FinishWithError(method_call, "DXCORE_UNAVAILABLE", "DXcore library is unavailable or invalid");
+                return;
+            }
             auto *ping_task = new AsyncPingTask(method_call);
             std::thread(ExecutePingInBackground, ping_task).detach();
         }
         else if (strcmp(method, "getFlag") == 0)
         {
+            if (!defyx_core::LoadCoreDll(""))
+            {
+                FinishWithError(method_call, "DXCORE_UNAVAILABLE", "DXcore library is unavailable or invalid");
+                return;
+            }
             auto *flag_task = new AsyncFlagTask(method_call);
             std::thread(ExecuteFlagInBackground, flag_task).detach();
         }
@@ -587,6 +642,11 @@ void VPNChannelHandler::HandleMethodCall(FlMethodChannel *channel,
         }
         else if (strcmp(method, "getFlowLine") == 0)
         {
+            if (!defyx_core::LoadCoreDll(""))
+            {
+                FinishWithError(method_call, "DXCORE_UNAVAILABLE", "DXcore library is unavailable or invalid");
+                return;
+            }
             FlValue *args = fl_method_call_get_args(method_call);
             std::string is_test_str = LookupString(args, "isTest");
             std::string flowLine = defyx_core::GetFlowLine();
@@ -598,6 +658,11 @@ void VPNChannelHandler::HandleMethodCall(FlMethodChannel *channel,
         }
         else if (strcmp(method, "getCachedFlowLine") == 0)
         {
+            if (!defyx_core::LoadCoreDll(""))
+            {
+                FinishWithError(method_call, "DXCORE_UNAVAILABLE", "DXcore library is unavailable or invalid");
+                return;
+            }
             std::string flowLine = defyx_core::GetCachedFlowLine();
             if (flowLine.empty())
             {
@@ -607,6 +672,11 @@ void VPNChannelHandler::HandleMethodCall(FlMethodChannel *channel,
         }
         else if (strcmp(method, "decodeAndVerifyFlowline") == 0)
         {
+            if (!defyx_core::LoadCoreDll(""))
+            {
+                FinishWithError(method_call, "DXCORE_UNAVAILABLE", "DXcore library is unavailable or invalid");
+                return;
+            }
             FlValue *args = fl_method_call_get_args(method_call);
             std::string flowLine = LookupString(args, "flowLine");
             if (!flowLine.empty())
@@ -653,6 +723,11 @@ void VPNChannelHandler::HandleMethodCall(FlMethodChannel *channel,
         }
         else if (strcmp(method, "startVPN") == 0)
         {
+            if (!defyx_core::LoadCoreDll(""))
+            {
+                FinishWithError(method_call, "DXCORE_UNAVAILABLE", "DXcore library is unavailable or invalid");
+                return;
+            }
             FlValue *args = fl_method_call_get_args(method_call);
             std::string flow = LookupString(args, "flowLine");
             std::string pattern = LookupString(args, "pattern");
@@ -661,7 +736,12 @@ void VPNChannelHandler::HandleMethodCall(FlMethodChannel *channel,
             std::error_code ec;
             std::filesystem::create_directories(cache_dir, ec);
 
-            defyx_core::StartVPN(cache_dir, flow, pattern);
+            bool ok = defyx_core::StartVPN(cache_dir, flow, pattern);
+            if (!ok)
+            {
+                FinishWithError(method_call, "DXCORE_UNAVAILABLE", "DXcore library did not accept the VPN start request");
+                return;
+            }
 
             {
                 std::lock_guard<std::mutex> lock(self->status_mutex_);
@@ -679,6 +759,11 @@ void VPNChannelHandler::HandleMethodCall(FlMethodChannel *channel,
         }
         else if (strcmp(method, "stopVPN") == 0)
         {
+            if (!defyx_core::LoadCoreDll(""))
+            {
+                FinishWithError(method_call, "DXCORE_UNAVAILABLE", "DXcore library is unavailable or invalid");
+                return;
+            }
             {
                 std::lock_guard<std::mutex> lock(self->status_mutex_);
                 self->vpn_status_ = "disconnecting";
@@ -693,7 +778,11 @@ void VPNChannelHandler::HandleMethodCall(FlMethodChannel *channel,
 
             self->SendStatus("disconnecting");
 
-            defyx_core::StopVPN();
+            if (!defyx_core::StopVPN())
+            {
+                FinishWithError(method_call, "DXCORE_UNAVAILABLE", "DXcore library did not stop the VPN session");
+                return;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
             {

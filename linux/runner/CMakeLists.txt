@@ -32,6 +32,11 @@ find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(APPINDICATOR REQUIRED ayatana-appindicator3-0.1)
 
+option(DEFYX_ENABLE_MOCK_DXCORE "Enable test-only mock DXcore behavior" OFF)
+if(DEFYX_ENABLE_MOCK_DXCORE AND CMAKE_BUILD_TYPE MATCHES "^[Rr]elease$")
+  message(FATAL_ERROR "DEFYX_ENABLE_MOCK_DXCORE must not be enabled in Release builds")
+endif()
+
 target_link_libraries(${BINARY_NAME} PRIVATE flutter)
 target_link_libraries(${BINARY_NAME} PRIVATE PkgConfig::GTK)
 target_link_libraries(${BINARY_NAME} PRIVATE dl)
@@ -42,6 +47,10 @@ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 target_include_directories(${BINARY_NAME} PRIVATE ${APPINDICATOR_INCLUDE_DIRS})
 
 target_compile_options(${BINARY_NAME} PRIVATE ${APPINDICATOR_CFLAGS_OTHER})
+
+if(DEFYX_ENABLE_MOCK_DXCORE)
+  target_compile_definitions(${BINARY_NAME} PRIVATE DEFYX_ENABLE_MOCK_DXCORE=1)
+endif()
 
 # --- DXcore native library build and packaging --------------------------------
 
@@ -124,11 +133,22 @@ if("${_bundle_config}" STREQUAL "")
   set(_bundle_config "Debug")
 endif()
 
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" _runner_arch_raw)
+if(_runner_arch_raw MATCHES "^(x86_64|amd64)$")
+  set(_runner_arch "x64")
+elseif(_runner_arch_raw MATCHES "^(aarch64|arm64)$")
+  set(_runner_arch "arm64")
+else()
+  message(FATAL_ERROR "Unsupported Linux architecture '${CMAKE_SYSTEM_PROCESSOR}'. Expected x86_64/amd64 or aarch64/arm64.")
+endif()
+
 string(TOLOWER "${_bundle_config}" _bundle_config_lower)
-set(_bundle_dir "${PROJECT_BUILD_DIR}linux/x64/${_bundle_config_lower}/bundle")
+set(_bundle_dir "${PROJECT_BUILD_DIR}linux/${_runner_arch}/${_bundle_config_lower}/bundle")
 
 if(_have_dxcore_lib)
+  get_filename_component(_scripts_dir "${CMAKE_SOURCE_DIR}/../scripts" ABSOLUTE)
   add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
+    COMMAND bash "${_scripts_dir}/validate_dxcore.sh" "${_dxcore_source}" "${_runner_arch}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_bundle_dir}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_dxcore_source}" "${_bundle_dir}/libDXcore.so"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_bundle_dir}/lib"

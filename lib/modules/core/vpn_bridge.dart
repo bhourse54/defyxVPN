@@ -8,81 +8,130 @@ class VpnBridge {
 
   final _methodChannel = MethodChannel('com.defyx.vpn');
 
-  Future<String?> getVpnStatus() async =>
-      await _methodChannel.invokeMethod('getVpnStatus');
+  Future<T> _invokeWithFallback<T>(
+    String method, {
+    Object? arguments,
+    required T fallback,
+  }) async {
+    try {
+      return await _methodChannel.invokeMethod<T>(method, arguments) ?? fallback;
+    } on PlatformException {
+      return fallback;
+    }
+  }
 
-  Future<void> setAsnName() async =>
+  Future<String?> getVpnStatus() async =>
+      await _invokeWithFallback<String>('getVpnStatus', fallback: 'unavailable');
+
+  Future<void> setAsnName() async {
+    try {
       await _methodChannel.invokeMethod('setAsnName');
+    } on PlatformException {
+      // No-op on Linux when DXcore is unavailable.
+    }
+  }
 
   Future<String> getPing() async =>
-      (await _methodChannel.invokeMethod('calculatePing')).toString();
+      await _invokeWithFallback<String>('calculatePing', fallback: 'unavailable');
 
-  Future<void> setTimezone(String timezone) =>
-      _methodChannel.invokeMethod("setTimezone", {"timezone": timezone});
+  Future<void> setTimezone(String timezone) async {
+    try {
+      await _methodChannel.invokeMethod("setTimezone", {"timezone": timezone});
+    } on PlatformException {
+      // No-op on Linux when DXcore is unavailable.
+    }
+  }
 
-  Future<void> disconnectVpn() async =>
-      await _methodChannel.invokeMethod('disconnect');
+  Future<bool> disconnectVpn() async =>
+      await _invokeWithFallback<bool>('disconnect', fallback: false);
 
-  Future<void> stopVPN() async => await _methodChannel.invokeMethod('stopVPN');
+  Future<bool> stopVPN() async =>
+      await _invokeWithFallback<bool>('stopVPN', fallback: false);
 
-  Future<void> stopTun2Socks() async =>
+  Future<void> stopTun2Socks() async {
+    try {
       await _methodChannel.invokeMethod("stopTun2Socks");
+    } on PlatformException {
+      // No-op on Linux when DXcore is unavailable.
+    }
+  }
 
-  Future<bool?> connectVpn() async =>
-      await _methodChannel.invokeMethod<bool>('connect');
+  Future<bool> connectVpn() async =>
+      await _invokeWithFallback<bool>('connect', fallback: false);
 
   Future<bool?> grantVpnPermission() async =>
       await _methodChannel.invokeMethod<bool>("grantVpnPermission");
 
-  Future<void> startVPN(String flowline, String pattern, bool deepScan, bool healthCheck) async =>
-      await _methodChannel.invokeMethod("startVPN", {
+  Future<bool> startVPN(String flowline, String pattern, bool deepScan, bool healthCheck) async =>
+      await _invokeWithFallback<bool>("startVPN", arguments: {
         "flowLine": flowline,
         "pattern": pattern,
         "deepScan": deepScan.toString(),
         "healthCheck": healthCheck.toString()
-      });
+      }, fallback: false);
 
-  Future<void> startTun2socks() =>
-      _methodChannel.invokeMethod("startTun2socks");
+  Future<void> startTun2socks() async {
+    try {
+      await _methodChannel.invokeMethod("startTun2socks");
+    } on PlatformException {
+      // No-op on Linux when DXcore is unavailable.
+    }
+  }
 
   Future<bool> isTunnelRunning() async =>
-      (await _methodChannel.invokeMethod<bool>("isTunnelRunning")) ?? false;
+      await _invokeWithFallback<bool>("isTunnelRunning", fallback: false);
 
-  Future<void> setConnectionMethod(String method) async => await _methodChannel
-      .invokeMethod("setConnectionMethod", {"method": method});
+  Future<void> setConnectionMethod(String method) async {
+    try {
+      await _methodChannel
+          .invokeMethod("setConnectionMethod", {"method": method});
+    } on PlatformException {
+      // No-op on Linux when DXcore is unavailable.
+    }
+  }
   Future<String> getFlowLine() async {
     final isTestMode = dotenv.env['IS_TEST_MODE'] ?? 'false';
-    final flowLine = await _methodChannel
-        .invokeMethod<String>('getFlowLine', {"isTest": isTestMode});
-    return flowLine ?? '';
+    final flowLine = await _invokeWithFallback<String>(
+      'getFlowLine',
+      arguments: {"isTest": isTestMode},
+      fallback: '',
+    );
+    return flowLine;
   }
 
   Future<String> getCachedFlowLine() async {
-    final info = await _methodChannel.invokeMethod<String>('getCachedFlowLine');
-    return info ?? "";
+    return await _invokeWithFallback<String>(
+      'getCachedFlowLine',
+      fallback: '',
+    );
   }
 
   Future<String> decodeAndVerifyFlowline(String flowLine) async {
-    final decoded = await _methodChannel.invokeMethod<String>(
+    final decoded = await _invokeWithFallback<String>(
       'decodeAndVerifyFlowline',
-      {"flowLine": flowLine},
+      arguments: {"flowLine": flowLine},
+      fallback: '',
     );
-    return decoded ?? "";
+    return decoded;
   }
 
   Future<void> setCacheDir(String cacheDir) async {
-    await _methodChannel.invokeMethod('setCacheDir', {"cacheDir": cacheDir});
+    try {
+      await _methodChannel.invokeMethod('setCacheDir', {"cacheDir": cacheDir});
+    } on PlatformException {
+      // No-op on Linux when DXcore is unavailable.
+    }
   }
 
   Future<String> getSharedDirectory() async =>
       (await _methodChannel.invokeMethod<String>('getSharedDirectory')) ?? "";
 
   Future<String> getFlag() async =>
-      (await _methodChannel.invokeMethod<String>('getFlag') ?? "");
+      await _invokeWithFallback<String>('getFlag', fallback: 'unavailable');
 
   Future<bool> prepareVpn() async =>
-      (await _methodChannel.invokeMethod('prepareVPN')) ?? false;
+      await _invokeWithFallback<bool>('prepareVPN', fallback: false);
 
   Future<bool> isVPNPrepared() async =>
-      (await _methodChannel.invokeMethod<bool>('isVPNPrepared')) ?? false;
+      await _invokeWithFallback<bool>('isVPNPrepared', fallback: false);
 }

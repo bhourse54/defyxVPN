@@ -17,6 +17,9 @@ class NetworkStatus {
     final ping = await _vpnBridge.getPing();
 
     final changePing = int.tryParse(ping);
+    if (changePing == null) {
+      return 'unavailable';
+    }
     return formatter.format(changePing);
   }
 

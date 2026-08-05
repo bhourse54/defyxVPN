@@ -263,12 +263,15 @@ class VPN {
     analyticsService.logVpnConnectAttempt(pattern.isEmpty ? 'auto' : pattern);
 
     try {
-      await _vpnBridge.startVPN(
+      final started = await _vpnBridge.startVPN(
         flowLineStorage,
         pattern,
         isDeep,
         healthCheckEnabled,
       );
+      if (!started) {
+        throw StateError('DXcore unavailable');
+      }
       WidgetsBinding.instance.addPostFrameCallback((_) {
         connectionNotifier?.setAnalyzing();
       });
@@ -385,7 +388,11 @@ class VPN {
   Future<void> _stopVPN(WidgetRef ref) async {
     final connectionNotifier = ref.read(connectionStateProvider.notifier);
     connectionNotifier.setDisconnecting();
-    await _vpnBridge.stopVPN();
+    final stopped = await _vpnBridge.stopVPN();
+    if (!stopped) {
+      connectionNotifier.setError();
+      return;
+    }
     _clearData(ref);
     connectionNotifier.setDisconnected();
   }
@@ -394,7 +401,11 @@ class VPN {
     final connectionNotifier = ref.read(connectionStateProvider.notifier);
     final vpnData = await _container?.read(vpnDataProvider.future);
     connectionNotifier.setDisconnecting();
-    await _vpnBridge.disconnectVpn();
+    final disconnected = await _vpnBridge.disconnectVpn();
+    if (!disconnected) {
+      connectionNotifier.setError();
+      return;
+    }
     _clearData(ref);
     await vpnData?.disableVPN();
     connectionNotifier.setDisconnected();
@@ -422,7 +433,11 @@ class VPN {
     );
     connectionNotifier?.setDisconnecting();
     final vpnData = await _container?.read(vpnDataProvider.future);
-    await _vpnBridge.stopVPN();
+    final stopped = await _vpnBridge.stopVPN();
+    if (!stopped) {
+      connectionNotifier?.setError();
+      return;
+    }
     await vpnData?.disableVPN();
     connectionNotifier?.setDisconnected();
   }

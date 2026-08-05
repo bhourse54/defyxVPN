@@ -27,6 +27,15 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
+      - name: Format check
+        run: dart format --output=none --set-exit-if-changed .
+
+      - name: Run analysis
+        run: flutter analyze
+
+      - name: Run tests
+        run: flutter test
+
       - name: Get app version
         id: get_version
         uses: ./.github/actions/get-version
@@ -41,16 +50,33 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.DXCORE_PRIVATE_ACCESS_TOKEN }}
         run: |
-          RELEASE_JSON=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            https://api.github.com/repos/UnboundTechCo/DXcore-private/releases/latest)
+          set -euo pipefail
+
+          if [ -z "${GITHUB_TOKEN:-}" ]; then
+            echo "::error::DXCORE_PRIVATE_ACCESS_TOKEN is required for the Linux release build. Formatting, analysis, and tests have already run."
+            exit 1
+          fi
+
+          RELEASE_JSON=$(curl -fsS -H "Authorization: token $GITHUB_TOKEN" \
+            https://api.github.com/repos/UnboundTechCo/DXcore-private/releases/latest) || {
+            echo "::error::Unable to fetch the proprietary DXcore release metadata. The Linux release build is blocked until a real DXcore package is available."
+            exit 1
+          }
 
           ASSET_ID=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name=="DXcore.zip") | .id')
+          if [ -z "$ASSET_ID" ] || [ "$ASSET_ID" = "null" ]; then
+            echo "::error::The proprietary DXcore release asset was not found. Formatting, analysis, and tests still completed, but the production Linux bundle cannot be built without a real libDXcore.so."
+            exit 1
+          fi
 
-          curl -L \
+          curl -fL \
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/octet-stream" \
             "https://api.github.com/repos/UnboundTechCo/DXcore-private/releases/assets/$ASSET_ID" \
-            -o DXcore.zip
+            -o DXcore.zip || {
+              echo "::error::Failed to download the proprietary DXcore archive. The production Linux release build is blocked until a real libDXcore.so is available."
+              exit 1
+            }
 
           unzip -o DXcore.zip -d linux/runner
           rm DXcore.zip
@@ -62,8 +88,20 @@ jobs:
       - name: Build Linux Release
         run: flutter build linux --release
 
+      - name: Locate Linux bundle
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE_DIR="$(find build/linux -type d -path '*/release/bundle' -print -quit)"
+          if [ -z "$BUNDLE_DIR" ]; then
+            echo "::error::Linux bundle directory was not found"
+            exit 1
+          fi
+          echo "path=$BUNDLE_DIR" >> "$GITHUB_OUTPUT"
+
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
           name: linux-release
-          path: build/linux/x64/release/bundle/
+          path: ${{ steps.bundle.outputs.path }}

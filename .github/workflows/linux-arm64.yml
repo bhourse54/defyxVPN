@@ -1,0 +1,165 @@
+name: Build Linux ARM64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux-arm64:
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Check out application
+        uses: actions/checkout@v4
+
+      - name: Create .env if required
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f .env ] && [ -f .env.example ]; then
+            cp .env.example .env
+          fi
+          if [ ! -f .env ]; then
+            echo "::notice::.env was not created because .env.example is missing"
+          fi
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            file \
+            git \
+            unzip \
+            xz-utils \
+            zip \
+            pkg-config \
+            cmake \
+            ninja-build \
+            clang \
+            golang-go \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly \
+            libsecret-1-dev
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        continue-on-error: true
+        with:
+          flutter-version: "3.35.2"
+          channel: "stable"
+          architecture: "arm64"
+
+      - name: Report ARM64 Flutter host toolchain status
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Host architecture: $(uname -m)"
+          uname -a
+          cat /etc/os-release
+
+          if ! command -v flutter >/dev/null 2>&1; then
+            echo "::error::ARM64 Flutter host toolchain is unavailable; native Linux ARM64 builds cannot complete on this runner."
+            exit 1
+          fi
+
+          flutter --version --machine | python3 - <<'PY'
+          import json
+          import sys
+
+          data = json.load(sys.stdin)
+          framework_revision = data.get("frameworkRevision", "unknown")
+          engine_revision = data.get("engineRevision", "unknown")
+          dart_sdk_url = data.get("dartSdkUrl") or "unavailable"
+
+          print(f"Flutter framework revision: {framework_revision}")
+          print(f"Engine revision: {engine_revision}")
+          print(f"Dart SDK URL: {dart_sdk_url}")
+          PY
+
+          flutter --version
+          dart --version
+          flutter doctor --verbose
+
+      - name: Verify Flutter version
+        shell: bash
+        run: |
+          set -euxo pipefail
+          flutter --version
+          dart --version
+          flutter doctor --verbose
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Run analysis
+        run: flutter analyze
+
+      - name: Run tests
+        run: flutter test
+
+      - name: Enable Linux desktop support
+        run: flutter config --enable-linux-desktop
+
+      - name: Build Linux ARM64 release bundle
+        shell: bash
+        env:
+          DEFYX_DXCORE_LIB: ${{ vars.DEFYX_DXCORE_LIB }}
+          DEFYX_DXCORE_DIR: ${{ vars.DEFYX_DXCORE_DIR }}
+        run: |
+          set -euxo pipefail
+          flutter build linux --release
+
+      - name: Locate Linux bundle
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE_DIR="$(find build/linux -type d -path '*/release/bundle' -print -quit)"
+          if [ -z "$BUNDLE_DIR" ]; then
+            echo "::error::Linux bundle directory was not found"
+            exit 1
+          fi
+          echo "path=$BUNDLE_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Validate bundle ELF files
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE_DIR="${{ steps.bundle.outputs.path }}"
+          mapfile -t ELF_FILES < <(find "$BUNDLE_DIR" -type f \( -perm -111 -o -name '*.so' \))
+          if [ "${#ELF_FILES[@]}" -eq 0 ]; then
+            echo "::error::No ELF executables or shared objects were found in $BUNDLE_DIR"
+            exit 1
+          fi
+
+          for path in "${ELF_FILES[@]}"; do
+            info="$(file -b "$path")"
+            echo "$path: $info"
+            if [[ "$info" == *"x86-64"* ]]; then
+              echo "::error::Found x86-64 binary in ARM64 bundle: $path"
+              exit 1
+            fi
+            if [[ "$info" == *"ELF"* ]]; then
+              if [[ "$info" != *"AArch64"* && "$info" != *"ARM aarch64"* ]]; then
+                echo "::error::Unexpected ELF architecture for $path: $info"
+                exit 1
+              fi
+            fi
+          done
+
+      - name: Upload ARM64 bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64-release
+          path: ${{ steps.bundle.outputs.path }}

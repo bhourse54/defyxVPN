@@ -37,6 +37,50 @@ sudo apt update && sudo apt install -y \
 | `ninja-build` | Fast build tool |
 | `clang` | C/C++ compiler |
 
+## ARM64 Notes
+
+On native ARM64/AArch64 Linux, the Flutter bundle should be produced under:
+
+```text
+build/linux/arm64/<configuration>/bundle
+```
+
+The Linux runner normalizes architecture names as follows:
+
+- `x86_64` and `amd64` map to `x64`
+- `aarch64` and `arm64` map to `arm64`
+
+## Local Validation
+
+Before packaging `libDXcore.so`, validate it with:
+
+```bash
+uname -m
+file path/to/libDXcore.so
+readelf -h path/to/libDXcore.so
+nm -D --defined-only path/to/libDXcore.so
+```
+
+The repository also includes a bundle validator:
+
+```bash
+bash scripts/validate_dxcore.sh /absolute/path/to/libDXcore.so arm64
+```
+
+## Build Commands
+
+Build using a prebuilt library:
+
+```bash
+DEFYX_DXCORE_LIB=/absolute/path/to/libDXcore.so flutter build linux --release
+```
+
+Build using the private DXcore source directory:
+
+```bash
+DEFYX_DXCORE_DIR=/absolute/path/to/private/DXcore/source flutter build linux --release
+```
+
 ## Build & Run
 
 ```bash
