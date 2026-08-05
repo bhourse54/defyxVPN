@@ -1,7 +1,8 @@
-name: Build flutter-pi ARM64
+name: Build flutter-pi for Raspberry Pi 5
 
 on:
   workflow_dispatch:
+
   push:
     branches:
       - main
@@ -11,36 +12,64 @@ permissions:
 
 jobs:
   build:
-    name: Build ARM64 bundle
+    name: Build Pi 5 ARM64 bundle
     runs-on: ubuntu-24.04
 
     steps:
+      # ------------------------------------------------------------
+      # 1. Download the application repository
+      # ------------------------------------------------------------
       - name: Check out application
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
+      # ------------------------------------------------------------
+      # 2. The project requires .env as a Flutter asset.
+      #    The repository contains .env.example, so copy it.
+      # ------------------------------------------------------------
       - name: Create environment file
         shell: bash
         run: |
           set -euo pipefail
-          test -f .env.example
-          cp .env.example .env
-          test -f .env
 
-      - name: Install Flutter prerequisites
+          if [ ! -f ".env.example" ]; then
+            echo "::error::.env.example was not found in the repository root"
+            echo "Files in repository root:"
+            ls -la
+            exit 1
+          fi
+
+          cp .env.example .env
+
+          if [ ! -s ".env" ]; then
+            echo "::error::.env was created but is empty"
+            exit 1
+          fi
+
+          echo ".env created from .env.example"
+
+      # ------------------------------------------------------------
+      # 3. Install packages required by Flutter on the x64 runner
+      # ------------------------------------------------------------
+      - name: Install build prerequisites
         shell: bash
         run: |
           set -euxo pipefail
 
           sudo apt-get update
+
           sudo apt-get install -y \
             curl \
+            file \
             git \
             unzip \
             xz-utils \
             zip \
             libglu1-mesa
 
-      - name: Install Flutter stable
+      # ------------------------------------------------------------
+      # 4. Install the official x64 Flutter SDK
+      # ------------------------------------------------------------
+      - name: Install Flutter
         shell: bash
         run: |
           set -euxo pipefail
@@ -53,56 +82,120 @@ jobs:
 
           echo "$HOME/flutter/bin" >> "$GITHUB_PATH"
 
-      - name: Show Flutter version
+      # ------------------------------------------------------------
+      # 5. Initialize Flutter and show the installed version
+      # ------------------------------------------------------------
+      - name: Initialize Flutter
         shell: bash
         run: |
           set -euxo pipefail
 
           flutter config --no-analytics
           flutter --version
-          flutter doctor -v
 
-      - name: Get project packages
+      # ------------------------------------------------------------
+      # 6. Download the application's Dart/Flutter dependencies
+      # ------------------------------------------------------------
+      - name: Get application dependencies
         shell: bash
         run: |
           set -euxo pipefail
 
           flutter pub get
 
+      # ------------------------------------------------------------
+      # 7. Install flutterpi_tool globally
+      # ------------------------------------------------------------
       - name: Install flutterpi_tool
         shell: bash
         run: |
           set -euxo pipefail
 
           flutter pub global activate flutterpi_tool 0.12.0
+
           echo "$HOME/.pub-cache/bin" >> "$GITHUB_PATH"
 
-      - name: Build ARM64 flutter-pi bundle
+      # ------------------------------------------------------------
+      # 8. Build an ARM64 release bundle tuned for Raspberry Pi 5
+      # ------------------------------------------------------------
+      - name: Build Raspberry Pi 5 bundle
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euxo pipefail
 
-          flutterpi_tool --help
-          flutterpi_tool build --help
-
           flutterpi_tool build \
-          --arch=arm64 \
-          --cpu=pi5 \
-          --release
+            --arch=arm64 \
+            --cpu=pi5 \
+            --release
 
-          test -d build/flutter_assets
-          test -f build/flutter_assets/app.so
+          echo "Build directory contents:"
+          find build -maxdepth 6 -type f -print || true
+
+          # Find app.so without assuming a fixed flutterpi_tool
+          # output-directory name.
+          APP_SO="$(find build -type f -name app.so -print -quit)"
+
+          if [ -z "$APP_SO" ]; then
+            echo "::error::The build completed, but app.so was not found"
+            exit 1
+          fi
+
+          echo "Found app.so at: $APP_SO"
+
+          # Start at the directory containing app.so, then move upward
+          # until the bundled flutter-pi executable is found.
+          BUNDLE_DIR="$(dirname "$APP_SO")"
+
+          while [ "$BUNDLE_DIR" != "build" ] && \
+                [ ! -f "$BUNDLE_DIR/flutter-pi" ]; do
+            BUNDLE_DIR="$(dirname "$BUNDLE_DIR")"
+          done
+
+          if [ ! -f "$BUNDLE_DIR/flutter-pi" ]; then
+            echo "::error::Could not locate flutter-pi in the generated bundle"
+            exit 1
+          fi
+
+          if ! find "$BUNDLE_DIR" \
+              -type f \
+              -name 'libflutter_engine.so*' \
+              -print \
+              -quit |
+              grep -q .; then
+            echo "::error::Could not locate libflutter_engine.so in the bundle"
+            exit 1
+          fi
+
+          echo "Bundle directory: $BUNDLE_DIR"
 
           echo "Bundle contents:"
-          find build/flutter_assets -maxdepth 2 -type f -print
+          find "$BUNDLE_DIR" -maxdepth 4 -type f -print
 
           echo "Application snapshot architecture:"
-          file build/flutter_assets/app.so
+          file "$APP_SO"
 
-      - name: Upload ARM64 application bundle
+          echo "flutter-pi executable architecture:"
+          file "$BUNDLE_DIR/flutter-pi"
+
+          # Use tar so Linux executable permissions are preserved.
+          tar \
+            -C "$BUNDLE_DIR" \
+            -czf "$GITHUB_WORKSPACE/flutter-pi-pi5-arm64.tar.gz" \
+            .
+
+          test -s "$GITHUB_WORKSPACE/flutter-pi-pi5-arm64.tar.gz"
+
+          echo "Created flutter-pi-pi5-arm64.tar.gz"
+
+      # ------------------------------------------------------------
+      # 9. Make the compressed bundle downloadable from GitHub
+      # ------------------------------------------------------------
+      - name: Upload Raspberry Pi 5 bundle
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-pi-arm64
-          path: build/flutter_assets/
+          name: flutter-pi-pi5-arm64
+          path: flutter-pi-pi5-arm64.tar.gz
           if-no-files-found: error
           retention-days: 14
