@@ -18,6 +18,14 @@ jobs:
       - name: Check out application
         uses: actions/checkout@v6
 
+      - name: Create environment file
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f .env.example
+          cp .env.example .env
+          test -f .env
+
       - name: Install Flutter prerequisites
         shell: bash
         run: |
