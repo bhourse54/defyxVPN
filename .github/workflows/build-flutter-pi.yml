@@ -66,17 +66,21 @@ jobs:
         run: |
           set -euxo pipefail
 
-          flutter pub global activate flutterpi_tool
+          flutter pub global activate flutterpi_tool 0.12.0
+          echo "$HOME/.pub-cache/bin" >> "$GITHUB_PATH"
 
       - name: Build ARM64 flutter-pi bundle
         shell: bash
         run: |
           set -euxo pipefail
 
-          flutter pub global run flutterpi_tool build \
-            --arch=arm64 \
-            --cpu=pi4 \
-            --release
+          flutterpi_tool --help
+          flutterpi_tool build --help
+
+          flutterpi_tool build \
+          --arch=arm64 \
+          --cpu=pi5 \
+          --release
 
           test -d build/flutter_assets
           test -f build/flutter_assets/app.so
