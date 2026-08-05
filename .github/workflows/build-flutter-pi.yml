@@ -1,0 +1,96 @@
+name: Build flutter-pi ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ARM64 bundle
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out application
+        uses: actions/checkout@v6
+
+      - name: Install Flutter prerequisites
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            git \
+            unzip \
+            xz-utils \
+            zip \
+            libglu1-mesa
+
+      - name: Install Flutter stable
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          git clone \
+            --depth 1 \
+            --branch stable \
+            https://github.com/flutter/flutter.git \
+            "$HOME/flutter"
+
+          echo "$HOME/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Show Flutter version
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          flutter config --no-analytics
+          flutter --version
+          flutter doctor -v
+
+      - name: Get project packages
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          flutter pub get
+
+      - name: Install flutterpi_tool
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          flutter pub global activate flutterpi_tool
+
+      - name: Build ARM64 flutter-pi bundle
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          flutter pub global run flutterpi_tool build \
+            --arch=arm64 \
+            --cpu=pi4 \
+            --release
+
+          test -d build/flutter_assets
+          test -f build/flutter_assets/app.so
+
+          echo "Bundle contents:"
+          find build/flutter_assets -maxdepth 2 -type f -print
+
+          echo "Application snapshot architecture:"
+          file build/flutter_assets/app.so
+
+      - name: Upload ARM64 application bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-pi-arm64
+          path: build/flutter_assets/
+          if-no-files-found: error
+          retention-days: 14
